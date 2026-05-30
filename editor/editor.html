@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>piton Editor</title>
+  <link rel="stylesheet" href="editor.css">
+</head>
+<body>
+  <div class="app">
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <div class="tl-left">
+        <button class="btn-back" id="btn-back" title="Close">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.81 7h7.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 010 1.06z"/>
+          </svg>
+        </button>
+        <span class="tl-title" id="tl-title">New Script</span>
+        <span class="dirty-dot" id="dirty-dot"></span>
+      </div>
+      <div class="tl-right">
+        <label class="toggle-row">
+          <label class="toggle">
+            <input type="checkbox" id="chk-enabled" checked>
+            <span class="track"></span>
+            <span class="thumb"></span>
+          </label>
+          <span class="tl-label">Enabled</span>
+        </label>
+        <div class="tl-sep"></div>
+        <button class="btn-run" id="btn-run" title="Run on active tab">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0zm4.879-2.773l4.264 2.559a.25.25 0 010 .428l-4.264 2.559A.25.25 0 016 10.559V5.442a.25.25 0 01.379-.215z"/>
+          </svg>
+          Run
+        </button>
+        <button class="btn-save" id="btn-save">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M10.586 1H3.5A1.5 1.5 0 002 2.5v11A1.5 1.5 0 003.5 15h9a1.5 1.5 0 001.5-1.5V4.914L10.586 1zM9 1.5l3.5 3.5H10a1 1 0 01-1-1V1.5zM3.5 3H8v1a2.5 2.5 0 002.5 2.5h1V13.5a.5.5 0 01-.5.5h-9a.5.5 0 01-.5-.5v-11a.5.5 0 01.5-.5zm4 8.5H5.25a.75.75 0 010-1.5H7.5V8.25a.75.75 0 011.5 0V10H11a.75.75 0 010 1.5H9v2.25a.75.75 0 01-1.5 0V11.5z"/>
+          </svg>
+          Save
+        </button>
+      </div>
+    </div>
+
+    <!-- Meta panel -->
+    <div class="meta-panel" id="meta-panel">
+      <div class="meta-field">
+        <label class="meta-label" for="meta-name">Name</label>
+        <input type="text" id="meta-name" class="meta-input" placeholder="New Script">
+      </div>
+      <div class="meta-field">
+        <label class="meta-label" for="meta-run-at">Run at</label>
+        <select id="meta-run-at" class="meta-select">
+          <option value="document-start">before-dom</option>
+          <option value="document-end">dom-ready</option>
+          <option value="document-idle">fully-loaded</option>
+        </select>
+      </div>
+      <div class="meta-field">
+        <label class="meta-label" for="meta-match">Match <span class="meta-hint">(comma-separated)</span></label>
+        <input type="text" id="meta-match" class="meta-input" placeholder="*://example.com/*">
+      </div>
+      <div class="meta-field">
+        <label class="meta-label" for="meta-description">Description</label>
+        <input type="text" id="meta-description" class="meta-input" placeholder="Description">
+      </div>
+    </div>
+
+    <!-- Main editor area -->
+    <div class="editor-area">
+      <div class="ln-col" id="ln-col"></div>
+      <div class="code-col" id="code-col">
+        <pre class="hl-layer" id="hl-layer" aria-hidden="true"></pre>
+        <textarea
+          id="editor"
+          class="editor-ta"
+          spellcheck="false"
+          autocorrect="off"
+          autocapitalize="off"
+          autocomplete="off"
+          wrap="off"
+        ></textarea>
+      </div>
+    </div>
+
+    <!-- Status bar -->
+    <div class="statusbar">
+      <div class="sb-left">
+        <span id="sb-cursor">Ln 1, Col 1</span>
+        <span class="sb-sep">·</span>
+        <span id="sb-matches">0 matches</span>
+      </div>
+      <div class="sb-right">
+        <span id="sb-saved" class="sb-saved">
+          <svg width="9" height="9" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
+          </svg>
+          Saved
+        </span>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="notif" id="notif"></div>
+
+  <script src="editor.js"></script>
+</body>
+</html>

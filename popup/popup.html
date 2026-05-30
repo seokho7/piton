@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>piton</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app">
+
+    <header class="header">
+      <div class="logo">
+        <span class="logo-text">piton</span>
+      </div>
+      <div class="header-actions">
+        <button class="btn-dashboard" id="btn-dashboard" title="Dashboard">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1 2.5A1.5 1.5 0 012.5 1h3A1.5 1.5 0 017 2.5v3A1.5 1.5 0 015.5 7h-3A1.5 1.5 0 011 5.5v-3zm8 0A1.5 1.5 0 0110.5 1h3A1.5 1.5 0 0115 2.5v3A1.5 1.5 0 0113.5 7h-3A1.5 1.5 0 019 5.5v-3zm-8 8A1.5 1.5 0 012.5 9h3A1.5 1.5 0 017 10.5v3A1.5 1.5 0 015.5 15h-3A1.5 1.5 0 011 13.5v-3zm8 0A1.5 1.5 0 0110.5 9h3a1.5 1.5 0 011.5 1.5v3a1.5 1.5 0 01-1.5 1.5h-3A1.5 1.5 0 019 13.5v-3z"/>
+          </svg>
+          All Sites
+        </button>
+        <button class="btn-new" id="btn-new" title="New Script">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 2a.75.75 0 01.75.75v4.5h4.5a.75.75 0 010 1.5h-4.5v4.5a.75.75 0 01-1.5 0v-4.5h-4.5a.75.75 0 010-1.5h4.5v-4.5A.75.75 0 018 2z"/>
+          </svg>
+          New
+        </button>
+      </div>
+    </header>
+
+    <div class="page-bar" id="page-bar">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" class="globe-icon">
+        <path d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 0111.765-3.808L2.192 13.765A6.476 6.476 0 011.5 8zm1.927 5.273L12.573 3.735A6.5 6.5 0 012.192 13.573V13.573z"/>
+      </svg>
+      <span class="page-host" id="page-host">—</span>
+      <div class="page-pill" id="page-pill">
+        <span id="active-count">0</span> active
+      </div>
+    </div>
+
+    <div class="search-bar">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" class="search-icon">
+        <path d="M10.68 11.74a6 6 0 01-7.922-8.982 6 6 0 018.982 7.922l3.04 3.04a.749.749 0 11-1.06 1.06l-3.04-3.04zm-5.68.26a4.5 4.5 0 100-9 4.5 4.5 0 000 9z"/>
+      </svg>
+      <input type="text" id="search" class="search-input" placeholder="Search scripts…">
+    </div>
+
+    <div class="list-wrap" id="list-wrap">
+      <div class="script-list" id="script-list"></div>
+      <div class="empty" id="empty">
+        <p class="empty-title">No scripts for this site</p>
+        <p class="empty-sub">Use "Create Script" below to add one</p>
+      </div>
+    </div>
+
+    <footer class="footer">
+      <span class="footer-info" id="footer-info">0 scripts</span>
+      <div class="footer-btns">
+        <button class="btn-ghost" id="btn-import">Import</button>
+        <button class="btn-ghost" id="btn-export">Export</button>
+      </div>
+    </footer>
+    <div class="made-by">by <a href="https://github.com/seokho7" target="_blank">@seokho7</a></div>
+
+  </div>
+
+  <input type="file" id="file-import" accept=".json" style="display:none">
+  <div class="toast" id="toast"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

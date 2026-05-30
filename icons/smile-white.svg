@@ -1,0 +1,14 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- 눈: 좌우대칭, 중앙으로 이동 -->
+  <circle cx="75" cy="81.2" r="8" fill="#fff"/>
+  <circle cx="125" cy="81.2" r="8" fill="#fff"/>
+  <!-- 입: 중앙으로 이동 -->
+  <path
+    d="M69 111.2 Q100 134.2 131 111.2"
+    stroke="#fff"
+    stroke-width="8"
+    fill="none"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>
