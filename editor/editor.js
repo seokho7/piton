@@ -77,6 +77,30 @@ function parseMeta(code) {
       case 'grant':       m.grant = val; break;
     }
   }
+
+  // Rescue @match / @name / etc. accidentally embedded inside @description value
+  if (m.description) {
+    const rescued = [];
+    const descLines = m.description.split('\n');
+    const cleanLines = [];
+    for (const line of descLines) {
+      const inner = line.match(/^\/\/ @(\S+)\s+(.*)/i);
+      if (inner) {
+        const ik = inner[1].toLowerCase();
+        const iv = inner[2].trim();
+        if (ik === 'match' || ik === 'include') rescued.push(iv);
+        else if (ik === 'name' && !m.name) m.name = iv;
+        else if (ik === 'run-at' && m.runAt === 'document_end') {
+          m.runAt = iv.replace(/-/g, '_'); m.runAtRaw = iv;
+        }
+      } else {
+        cleanLines.push(line);
+      }
+    }
+    if (rescued.length) m.matches.push(...rescued);
+    m.description = cleanLines.join('\n').trim();
+  }
+
   return m;
 }
 
