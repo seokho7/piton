@@ -119,6 +119,15 @@ function updateBadge(tabId, url, scripts) {
   }
 }
 
+// Keep service worker alive — MV3 terminates idle workers after ~30s
+chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === 'keepalive') getScripts();
+});
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
+});
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'GET_ACTIVE_SCRIPTS') {
     (async () => {

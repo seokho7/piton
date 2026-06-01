@@ -3,7 +3,7 @@
   "name": "piton",
   "version": "1.0.0",
   "description": "Userscript manager — inject & manage scripts on any page",
-  "permissions": ["storage", "scripting", "tabs"],
+  "permissions": ["storage", "scripting", "tabs", "alarms"],
   "host_permissions": ["<all_urls>"],
   "icons": {
     "16":  "icons/icon-16.png",

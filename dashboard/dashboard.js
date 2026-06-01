@@ -2,12 +2,17 @@
 
 const STORAGE_KEY = 'lm_scripts';
 
+let _cache = null;
+
 async function load() {
+  if (_cache !== null) return _cache;
   const r = await chrome.storage.local.get(STORAGE_KEY);
-  return r[STORAGE_KEY] ?? [];
+  _cache = r[STORAGE_KEY] ?? [];
+  return _cache;
 }
 
 async function save(scripts) {
+  _cache = scripts;
   await chrome.storage.local.set({ [STORAGE_KEY]: scripts });
 }
 
@@ -180,7 +185,10 @@ document.getElementById('btn-empty').addEventListener('click', () => openEditor(
 document.getElementById('search').addEventListener('input', refresh);
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && STORAGE_KEY in changes) refresh();
+  if (area === 'local' && STORAGE_KEY in changes) {
+    _cache = changes[STORAGE_KEY].newValue ?? [];
+    refresh();
+  }
 });
 
 refresh();

@@ -3,12 +3,17 @@
 const STORAGE_KEY = 'lm_scripts';
 
 // ── Storage ────────────────────────────────────────────────────────
+let _cache = null;
+
 async function load() {
+  if (_cache !== null) return _cache;
   const r = await chrome.storage.local.get(STORAGE_KEY);
-  return r[STORAGE_KEY] ?? [];
+  _cache = r[STORAGE_KEY] ?? [];
+  return _cache;
 }
 
 async function save(scripts) {
+  _cache = scripts;
   await chrome.storage.local.set({ [STORAGE_KEY]: scripts });
 }
 
@@ -36,6 +41,26 @@ function matchPattern(pattern, url) {
 
 function scriptMatches(script, url) {
   return (script.matches ?? []).some(p => matchPattern(p, url));
+}
+
+function hostFromPattern(pattern) {
+  try {
+    const noScheme = pattern.replace(/^[^:]+:\/\//, '');
+    return noScheme.split('/')[0] || pattern;
+  } catch { return pattern; }
+}
+
+// Show scripts registered for same host, even if path differs
+function scriptMatchesHost(script, url) {
+  if (!url) return false;
+  let host;
+  try { host = new URL(url).hostname; } catch { return false; }
+  return (script.matches ?? []).some(p => {
+    const ph = hostFromPattern(p);
+    if (ph === '*') return true;
+    const clean = ph.replace(/^\*\./, '');
+    return host === clean || host.endsWith('.' + clean);
+  });
 }
 
 // ── DOM helpers ────────────────────────────────────────────────────
@@ -146,7 +171,10 @@ let currentUrl = '';
 
 async function refreshPageBar() {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [[tab], scripts] = await Promise.all([
+      chrome.tabs.query({ active: true, currentWindow: true }),
+      load(),
+    ]);
     currentUrl = tab?.url || '';
     let host = '—';
     if (currentUrl) {
@@ -155,7 +183,6 @@ async function refreshPageBar() {
     }
     $('page-host').textContent = host;
 
-    const scripts = await load();
     const count = scripts.filter(s => s.enabled && scriptMatches(s, currentUrl)).length;
     $('active-count').textContent = count;
     $('page-pill').classList.toggle('lit', count > 0);
@@ -167,9 +194,9 @@ async function refresh() {
   const scripts = await load();
   const query   = $('search').value.toLowerCase().trim();
 
-  // Only show scripts that match the current site
+  // Show all scripts registered for same host (path may differ)
   const siteScripts = currentUrl
-    ? scripts.filter(s => scriptMatches(s, currentUrl))
+    ? scripts.filter(s => scriptMatchesHost(s, currentUrl))
     : [];
 
   const filtered = siteScripts.filter(s =>
@@ -250,8 +277,11 @@ $('file-import').addEventListener('change', async e => {
 });
 
 // Sync when storage changes (e.g. editor saves)
-chrome.storage.onChanged.addListener(changes => {
-  if (changes[STORAGE_KEY]) refresh();
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes[STORAGE_KEY]) {
+    _cache = changes[STORAGE_KEY].newValue ?? [];
+    refresh();
+  }
 });
 
 // ── Init ───────────────────────────────────────────────────────────
