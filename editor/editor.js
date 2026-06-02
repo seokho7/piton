@@ -231,7 +231,7 @@ function highlight(code) {
 
 // ── Editor sync ────────────────────────────────────────────────────
 function syncHighlight() {
-  hlLayer.innerHTML = highlight(editor.value) + '\n';
+  hlLayer.innerHTML = highlight(editor.value);
   // Keep textarea sized to match the pre layer so scrolling works correctly
   const h = hlLayer.scrollHeight;
   const w = hlLayer.scrollWidth;
@@ -436,8 +436,10 @@ function onEdit() {
 editor.addEventListener('input', onEdit);
 
 function syncScroll() {
+  // Compensate only for textarea's internal scroll (edge case during resize lag).
+  // code-col scroll moves both children naturally — no extra offset needed.
   hlLayer.style.transform =
-    `translate(-${codeCol.scrollLeft}px, -${codeCol.scrollTop}px)`;
+    `translate(-${editor.scrollLeft}px, -${editor.scrollTop}px)`;
   lnCol.scrollTop = codeCol.scrollTop;
 }
 editor.addEventListener('scroll', syncScroll);
