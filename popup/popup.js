@@ -1,121 +1,129 @@
 'use strict';
 
-const STORAGE_KEY = 'lm_scripts';
+performance.mark('piton-popup-start');
 
-// ── Storage ────────────────────────────────────────────────────────
-let _cache = null;
+const $ = id => document.getElementById(id);
+const patternCache = new Map();
 
-async function load() {
-  if (_cache !== null) return _cache;
-  const r = await chrome.storage.local.get(STORAGE_KEY);
-  _cache = r[STORAGE_KEY] ?? [];
-  return _cache;
-}
-
-async function save(scripts) {
-  _cache = scripts;
-  await chrome.storage.local.set({ [STORAGE_KEY]: scripts });
-}
+let currentUrl = '';
+let state = { url: '', host: '—', total: 0, activeCount: 0, scripts: [] };
+let toastTimer;
 
 function uid() {
-  return (crypto.randomUUID ? crypto.randomUUID()
-    : Date.now().toString(36) + Math.random().toString(36).slice(2));
+  return crypto.randomUUID ? crypto.randomUUID()
+    : Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
-// ── URL matching (mirrors background.js) ──────────────────────────
+function esc(value) {
+  return String(value).replace(/[&<>"]/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
+  })[char]);
+}
+
 function matchPattern(pattern, url) {
   if (!pattern || !url) return false;
-  try {
-    const re = new RegExp(
-      '^' +
-      pattern
-        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-        .replace(/\*/g, '.*')
-        .replace(/\?/g, '.') +
-      '$',
-      'i'
-    );
-    return re.test(url);
-  } catch { return false; }
+  let regex = patternCache.get(pattern);
+  if (regex === undefined) {
+    try {
+      regex = new RegExp(
+        '^' + pattern
+          .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+          .replace(/\*/g, '.*')
+          .replace(/\?/g, '.') + '$',
+        'i'
+      );
+    } catch {
+      regex = null;
+    }
+    patternCache.set(pattern, regex);
+  }
+  return regex ? regex.test(url) : false;
 }
 
 function scriptMatches(script, url) {
-  return (script.matches ?? []).some(p => matchPattern(p, url));
+  return (script.matches ?? []).some(pattern => matchPattern(pattern, url));
 }
 
 function hostFromPattern(pattern) {
-  try {
-    const noScheme = pattern.replace(/^[^:]+:\/\//, '');
-    return noScheme.split('/')[0] || pattern;
-  } catch { return pattern; }
+  const noScheme = pattern.replace(/^[^:]+:\/\//, '');
+  return noScheme.split('/')[0] || pattern;
 }
 
-// Show scripts registered for same host, even if path differs
 function scriptMatchesHost(script, url) {
   if (!url) return false;
   let host;
   try { host = new URL(url).hostname; } catch { return false; }
-  return (script.matches ?? []).some(p => {
-    const ph = hostFromPattern(p);
-    if (ph === '*') return true;
-    const clean = ph.replace(/^\*\./, '');
-    return host === clean || host.endsWith('.' + clean);
+  return (script.matches ?? []).some(pattern => {
+    const patternHost = hostFromPattern(pattern);
+    if (patternHost === '*') return true;
+    const clean = patternHost.replace(/^\*\./, '');
+    return host === clean || host.endsWith(`.${clean}`);
   });
 }
 
-// ── DOM helpers ────────────────────────────────────────────────────
-const $ = id => document.getElementById(id);
-
-let toastTimer;
-function toast(msg, ms = 2200) {
-  const el = $('toast');
-  el.textContent = msg;
-  el.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), ms);
+function makePopupData(url, scripts) {
+  let host = '—';
+  if (url) {
+    try { host = new URL(url).hostname || url.slice(0, 40); }
+    catch { host = url.slice(0, 40); }
+  }
+  return {
+    url,
+    host,
+    total: scripts.length,
+    activeCount: scripts.filter(script => script.enabled && scriptMatches(script, url)).length,
+    scripts: url ? scripts.filter(script => scriptMatchesHost(script, url)) : [],
+  };
 }
 
-function esc(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+async function requestPopupData() {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'GET_POPUP_DATA' });
+    if (response && Array.isArray(response.scripts)) return response;
+  } catch {
+    // Service worker unavailable: direct metadata-only fallback.
+  }
+
+  const [[tab], scripts] = await Promise.all([
+    chrome.tabs.query({ active: true, currentWindow: true }),
+    PitonStorage.listMetadata(),
+  ]);
+  return makePopupData(tab?.url || '', scripts);
+}
+
+function toast(message, ms = 2200) {
+  const element = $('toast');
+  element.textContent = message;
+  element.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => element.classList.remove('show'), ms);
 }
 
 async function openEditor(id) {
   const base = chrome.runtime.getURL('editor/editor.html');
   let url = id ? `${base}?id=${id}` : base;
 
-  if (!id) {
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab?.url && !/^(chrome|chrome-extension|about):/.test(tab.url)) {
-        url += `?tabUrl=${encodeURIComponent(tab.url)}`;
-      }
-    } catch {}
+  if (!id && currentUrl && !/^(chrome|chrome-extension|about):/.test(currentUrl)) {
+    url += `?tabUrl=${encodeURIComponent(currentUrl)}`;
   }
 
-  chrome.tabs.create({ url });
+  await chrome.tabs.create({ url });
   window.close();
 }
 
-// ── Render card ────────────────────────────────────────────────────
-function renderCard(script, currentUrl) {
-  const isMatch = currentUrl && scriptMatches(script, currentUrl);
-
+function cardElement(script) {
   const card = document.createElement('div');
-  card.className = `card${script.enabled ? '' : ' off'}${isMatch ? ' matched' : ''}`;
-  card.dataset.id = script.id;
-
-  // Tags
-  const tags = (script.matches ?? []);
-  const tagHtml = tags.slice(0, 2).map(t =>
-    `<span class="tag" title="${esc(t)}">${esc(t)}</span>`
+  const matched = scriptMatches(script, currentUrl);
+  const tags = script.matches ?? [];
+  const tagHtml = tags.slice(0, 2).map(tag =>
+    `<span class="tag" title="${esc(tag)}">${esc(tag)}</span>`
   ).join('');
   const moreHtml = tags.length > 2
-    ? `<span class="tag-more">+${tags.length - 2}</span>` : '';
+    ? `<span class="tag-more">+${tags.length - 2}</span>`
+    : '';
 
+  card.className = `card${script.enabled ? '' : ' off'}${matched ? ' matched' : ''}`;
+  card.dataset.id = script.id;
   card.innerHTML = `
     <div class="card-body">
       <div class="card-name">${esc(script.name || 'Unnamed Script')}</div>
@@ -123,169 +131,145 @@ function renderCard(script, currentUrl) {
     </div>
     <div class="card-actions">
       <label class="toggle" title="${script.enabled ? 'Disable' : 'Enable'}">
-        <input type="checkbox" ${script.enabled ? 'checked' : ''}>
+        <input type="checkbox" ${script.enabled ? 'checked' : ''} aria-label="Toggle script">
         <span class="track"></span>
         <span class="thumb"></span>
       </label>
-      <button class="icon-btn edit" title="Edit">
+      <button class="icon-btn edit" title="Edit" aria-label="Edit script">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
           <path d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 000-.354l-1.086-1.086zM11.189 6.25L9.75 4.81l-6.286 6.287a.25.25 0 00-.064.108l-.558 1.953 1.953-.558a.249.249 0 00.108-.064l6.286-6.286z"/>
         </svg>
       </button>
-      <button class="icon-btn del" title="Delete">
+      <button class="icon-btn del" title="Delete" aria-label="Delete script">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
           <path d="M11 1.75V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675l.66 6.6a.25.25 0 00.249.225h5.19a.25.25 0 00.249-.225l.66-6.6a.75.75 0 011.492.149l-.66 6.6A1.748 1.748 0 0110.595 15h-5.19a1.75 1.75 0 01-1.741-1.575l-.66-6.6a.75.75 0 011.492-.15zM6.5 1.75V3h3V1.75a.25.25 0 00-.25-.25h-2.5a.25.25 0 00-.25.25z"/>
         </svg>
       </button>
-    </div>
-  `;
-
-  // Toggle
-  card.querySelector('input[type="checkbox"]').addEventListener('change', async e => {
-    const scripts = await load();
-    const idx = scripts.findIndex(s => s.id === script.id);
-    if (idx !== -1) {
-      scripts[idx].enabled = e.target.checked;
-      await save(scripts);
-      card.classList.toggle('off', !e.target.checked);
-      await refreshPageBar();
-    }
-  });
-
-  // Edit
-  card.querySelector('.edit').addEventListener('click', () => openEditor(script.id));
-
-  // Delete
-  card.querySelector('.del').addEventListener('click', async () => {
-    const scripts = await load();
-    await save(scripts.filter(s => s.id !== script.id));
-    await refresh();
-    toast('Script deleted');
-  });
-
+    </div>`;
   return card;
 }
 
-// ── Page bar ───────────────────────────────────────────────────────
-let currentUrl = '';
-
-async function refreshPageBar() {
-  try {
-    const [[tab], scripts] = await Promise.all([
-      chrome.tabs.query({ active: true, currentWindow: true }),
-      load(),
-    ]);
-    currentUrl = tab?.url || '';
-    let host = '—';
-    if (currentUrl) {
-      try { host = new URL(currentUrl).hostname || currentUrl.slice(0, 40); }
-      catch { host = currentUrl.slice(0, 40); }
-    }
-    $('page-host').textContent = host;
-
-    const count = scripts.filter(s => s.enabled && scriptMatches(s, currentUrl)).length;
-    $('active-count').textContent = count;
-    $('page-pill').classList.toggle('lit', count > 0);
-  } catch {}
-}
-
-// ── Main render ────────────────────────────────────────────────────
-async function refresh() {
-  const scripts = await load();
-  const query   = $('search').value.toLowerCase().trim();
-
-  // Show all scripts registered for same host (path may differ)
-  const siteScripts = currentUrl
-    ? scripts.filter(s => scriptMatchesHost(s, currentUrl))
-    : [];
-
-  const filtered = siteScripts.filter(s =>
+function render() {
+  const query = $('search').value.toLowerCase().trim();
+  const filtered = state.scripts.filter(script =>
     !query ||
-    (s.name || '').toLowerCase().includes(query) ||
-    (s.description || '').toLowerCase().includes(query) ||
-    (s.matches || []).some(m => m.toLowerCase().includes(query))
+    (script.name || '').toLowerCase().includes(query) ||
+    (script.description || '').toLowerCase().includes(query) ||
+    (script.matches || []).some(match => match.toLowerCase().includes(query))
   );
 
-  const list  = $('script-list');
-  const empty = $('empty');
+  const fragment = document.createDocumentFragment();
+  for (const script of filtered) fragment.appendChild(cardElement(script));
+  $('script-list').replaceChildren(fragment);
+  $('empty').classList.toggle('show', filtered.length === 0);
+  $('list-wrap').setAttribute('aria-busy', 'false');
 
-  list.innerHTML = '';
-
-  if (filtered.length === 0) {
-    empty.classList.add('show');
-  } else {
-    empty.classList.remove('show');
-    filtered.forEach(s => list.appendChild(renderCard(s, currentUrl)));
-  }
-
-  const total = scripts.length;
-  $('footer-info').textContent = `${total} total · ${siteScripts.length} here`;
+  $('page-host').textContent = state.host;
+  $('active-count').textContent = state.activeCount;
+  $('page-pill').classList.toggle('lit', state.activeCount > 0);
+  $('footer-info').textContent = `${state.total} total · ${state.scripts.length} here`;
 }
 
-// ── Import / Export ────────────────────────────────────────────────
+function applyMetadata(metadata) {
+  state = makePopupData(currentUrl, metadata);
+  render();
+}
+
 async function doExport() {
-  const scripts = await load();
+  const scripts = await PitonStorage.listScripts();
   if (!scripts.length) { toast('Nothing to export'); return; }
   const blob = new Blob([JSON.stringify(scripts, null, 2)], { type: 'application/json' });
-  const url  = URL.createObjectURL(blob);
-  const a    = Object.assign(document.createElement('a'), {
+  const url = URL.createObjectURL(blob);
+  const anchor = Object.assign(document.createElement('a'), {
     href: url,
-    download: `piton-${new Date().toISOString().slice(0,10)}.json`,
+    download: `piton-${new Date().toISOString().slice(0, 10)}.json`,
   });
-  a.click();
+  anchor.click();
   URL.revokeObjectURL(url);
 }
 
 async function doImport(file) {
   try {
-    const raw      = await file.text();
-    const imported = JSON.parse(raw);
+    const imported = JSON.parse(await file.text());
     if (!Array.isArray(imported)) throw new Error('Expected JSON array');
 
-    const existing = await load();
-    const existIds = new Set(existing.map(s => s.id));
-    let added = 0;
+    const existing = await PitonStorage.listMetadata();
+    const existingIds = new Set(existing.map(script => script.id));
+    const additions = [];
 
-    for (const s of imported) {
-      if (!s.name || !s.code) continue;
-      if (s.id && existIds.has(s.id)) continue;
-      existing.push({ ...s, id: uid(), importedAt: Date.now() });
-      added++;
+    for (const script of imported) {
+      if (!script.name || !script.code) continue;
+      if (script.id && existingIds.has(script.id)) continue;
+      const id = uid();
+      existingIds.add(id);
+      additions.push({ ...script, id, importedAt: Date.now() });
     }
 
-    await save(existing);
-    await refresh();
-    toast(`Imported ${added} script${added !== 1 ? 's' : ''}`);
-  } catch(e) {
-    toast(`Import failed: ${e.message}`);
+    await PitonStorage.putMany(additions);
+    toast(`Imported ${additions.length} script${additions.length !== 1 ? 's' : ''}`);
+  } catch (error) {
+    toast(`Import failed: ${error.message}`);
   }
 }
 
-// ── Event bindings ─────────────────────────────────────────────────
 $('btn-dashboard').addEventListener('click', () => {
   chrome.tabs.create({ url: chrome.runtime.getURL('dashboard/dashboard.html') });
   window.close();
 });
 $('btn-new').addEventListener('click', () => openEditor());
-$('search').addEventListener('input', refresh);
+$('search').addEventListener('input', render);
 $('btn-export').addEventListener('click', doExport);
 $('btn-import').addEventListener('click', () => $('file-import').click());
-$('file-import').addEventListener('change', async e => {
-  const f = e.target.files[0];
-  if (f) await doImport(f);
-  e.target.value = '';
+$('file-import').addEventListener('change', async event => {
+  const file = event.target.files[0];
+  if (file) await doImport(file);
+  event.target.value = '';
 });
 
-// Sync when storage changes (e.g. editor saves)
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes[STORAGE_KEY]) {
-    _cache = changes[STORAGE_KEY].newValue ?? [];
-    refresh();
+$('script-list').addEventListener('change', async event => {
+  if (!event.target.matches('input[type="checkbox"]')) return;
+  const card = event.target.closest('.card');
+  const script = state.scripts.find(item => item.id === card?.dataset.id);
+  if (!script) return;
+
+  const enabled = event.target.checked;
+  script.enabled = enabled;
+  card.classList.toggle('off', !enabled);
+  state.activeCount = state.scripts.filter(item => item.enabled && scriptMatches(item, currentUrl)).length;
+  $('active-count').textContent = state.activeCount;
+  $('page-pill').classList.toggle('lit', state.activeCount > 0);
+
+  try {
+    await PitonStorage.setEnabled(script.id, enabled);
+  } catch (error) {
+    event.target.checked = !enabled;
+    script.enabled = !enabled;
+    card.classList.toggle('off', enabled);
+    toast(`Save failed: ${error.message}`);
   }
 });
 
-// ── Init ───────────────────────────────────────────────────────────
+$('script-list').addEventListener('click', async event => {
+  const button = event.target.closest('button');
+  const card = event.target.closest('.card');
+  if (!button || !card) return;
+  if (button.classList.contains('edit')) return openEditor(card.dataset.id);
+  if (button.classList.contains('del')) {
+    await PitonStorage.remove(card.dataset.id);
+    toast('Script deleted');
+  }
+});
+
 (async () => {
-  await refreshPageBar();
-  await refresh();
-})();
+  state = await requestPopupData();
+  currentUrl = state.url;
+  PitonStorage.onMetadataChanged(applyMetadata);
+  render();
+  performance.mark('piton-popup-ready');
+  performance.measure('piton-popup-init', 'piton-popup-start', 'piton-popup-ready');
+})().catch(error => {
+  $('list-wrap').setAttribute('aria-busy', 'false');
+  $('script-list').replaceChildren();
+  $('empty').classList.add('show');
+  toast(`Load failed: ${error.message}`);
+});

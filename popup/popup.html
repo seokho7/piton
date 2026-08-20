@@ -45,8 +45,12 @@
       <input type="text" id="search" class="search-input" placeholder="Search scripts…">
     </div>
 
-    <div class="list-wrap" id="list-wrap">
-      <div class="script-list" id="script-list"></div>
+    <div class="list-wrap" id="list-wrap" aria-busy="true">
+      <div class="script-list" id="script-list">
+        <div class="skeleton-card"><span></span><i></i></div>
+        <div class="skeleton-card"><span></span><i></i></div>
+        <div class="skeleton-card"><span></span><i></i></div>
+      </div>
       <div class="empty" id="empty">
         <p class="empty-title">No scripts for this site</p>
         <p class="empty-sub">Use "Create Script" below to add one</p>
@@ -67,6 +71,7 @@
   <input type="file" id="file-import" accept=".json" style="display:none">
   <div class="toast" id="toast"></div>
 
+  <script src="../shared/storage.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

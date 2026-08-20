@@ -1,7 +1,5 @@
 'use strict';
 
-const STORAGE_KEY = 'lm_scripts';
-
 const DEFAULT_CODE = `(function () {
   'use strict';
 
@@ -38,15 +36,9 @@ let scriptId  = null;
 let dirty     = false;
 let curLineEl = null;
 let hlRaf     = null;
+let loadedScript = null;
 
 // ── Storage ────────────────────────────────────────────────────────
-async function loadAll() {
-  const r = await chrome.storage.local.get(STORAGE_KEY);
-  return r[STORAGE_KEY] ?? [];
-}
-async function saveAll(scripts) {
-  await chrome.storage.local.set({ [STORAGE_KEY]: scripts });
-}
 function uid() {
   return crypto.randomUUID ? crypto.randomUUID()
     : Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -460,8 +452,6 @@ async function doSave() {
     const matches = metaMatch.value.split(',').map(s => s.trim()).filter(Boolean);
     const runAt   = metaRunAt.value.replace(/-/g, '_') || 'document_end';
     const code    = fullCode();
-    const scripts = await loadAll();
-
     const entry = (base = {}) => ({
       ...base,
       name, description: desc, matches, runAt,
@@ -470,19 +460,14 @@ async function doSave() {
     });
 
     if (scriptId) {
-      const idx = scripts.findIndex(s => s.id === scriptId);
-      if (idx !== -1) {
-        scripts[idx] = entry(scripts[idx]);
-      } else {
-        scripts.push(entry({ id: scriptId, createdAt: Date.now() }));
-      }
+      loadedScript = entry(loadedScript || { id: scriptId, createdAt: Date.now() });
     } else {
       scriptId = uid();
-      scripts.push(entry({ id: scriptId, createdAt: Date.now() }));
+      loadedScript = entry({ id: scriptId, createdAt: Date.now() });
       history.replaceState(null, '', `?id=${scriptId}`);
     }
 
-    await saveAll(scripts);
+    loadedScript = await PitonStorage.put(loadedScript);
     markClean();
     notify('Saved!', 'ok');
 
@@ -551,9 +536,9 @@ async function init() {
 
   if (id) {
     scriptId = id;
-    const scripts = await loadAll();
-    const found   = scripts.find(s => s.id === id);
+    const found = await PitonStorage.getScript(id);
     if (found) {
+      loadedScript = found;
       populateMetaInputs(parseMeta(found.code || ''));
       editor.value       = stripHeader(found.code || '') || DEFAULT_CODE;
       chkEnabled.checked = found.enabled !== false;
@@ -562,6 +547,7 @@ async function init() {
       editor.value = DEFAULT_CODE;
       notify('Script not found — starting fresh', 'err');
       scriptId = null;
+      loadedScript = null;
     }
   } else {
     let matchOverride;

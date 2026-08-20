@@ -20,7 +20,7 @@
 /* ── Shell ─────────────────────────────────── */
 body {
   width: 400px;
-  max-height: 560px;
+  height: 420px;
   font-family: var(--font);
   font-size: 13px;
   background: var(--bg);
@@ -164,6 +164,23 @@ body {
   flex-direction: column;
   gap: 5px;
 }
+
+.skeleton-card {
+  height: 57px;
+  padding: 12px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+.skeleton-card span,
+.skeleton-card i {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg3);
+}
+.skeleton-card span { width: 42%; margin-bottom: 9px; }
+.skeleton-card i { width: 67%; opacity: .7; }
 
 /* ── Script card ───────────────────────────── */
 .card {

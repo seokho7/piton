@@ -1,24 +1,11 @@
 'use strict';
 
-const STORAGE_KEY = 'lm_scripts';
-
 let _cache = null;
 
 async function load() {
   if (_cache !== null) return _cache;
-  const r = await chrome.storage.local.get(STORAGE_KEY);
-  _cache = r[STORAGE_KEY] ?? [];
+  _cache = await PitonStorage.listMetadata();
   return _cache;
-}
-
-async function save(scripts) {
-  _cache = scripts;
-  await chrome.storage.local.set({ [STORAGE_KEY]: scripts });
-}
-
-function uid() {
-  return crypto.randomUUID ? crypto.randomUUID()
-    : Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
 function openEditor(id) {
@@ -128,11 +115,10 @@ function renderGroup(host, ids, scriptMap, query) {
     `;
 
     row.querySelector('input[type="checkbox"]').addEventListener('change', async e => {
-      const scripts = await load();
-      const idx = scripts.findIndex(s => s.id === script.id);
-      if (idx !== -1) {
-        scripts[idx].enabled = e.target.checked;
-        await save(scripts);
+      const enabled = e.target.checked;
+      const changed = await PitonStorage.setEnabled(script.id, enabled);
+      if (changed) {
+        script.enabled = enabled;
         row.classList.toggle('off', !e.target.checked);
       }
     });
@@ -140,9 +126,7 @@ function renderGroup(host, ids, scriptMap, query) {
     row.querySelector('.edit').addEventListener('click', () => openEditor(script.id));
 
     row.querySelector('.del').addEventListener('click', async () => {
-      const scripts = await load();
-      await save(scripts.filter(s => s.id !== script.id));
-      refresh();
+      await PitonStorage.remove(script.id);
     });
 
     group.appendChild(row);
@@ -168,10 +152,12 @@ async function refresh() {
   const { sorted, scriptMap } = groupByHost(scripts);
   let anyRendered = false;
 
+  const fragment = document.createDocumentFragment();
   for (const [host, ids] of sorted) {
     const group = renderGroup(host, ids, scriptMap, query);
-    if (group) { content.appendChild(group); anyRendered = true; }
+    if (group) { fragment.appendChild(group); anyRendered = true; }
   }
+  content.appendChild(fragment);
 
   if (!anyRendered) {
     content.innerHTML = `<p style="padding:40px 0;text-align:center;color:var(--text3)">No matches for "${esc(query)}"</p>`;
@@ -184,11 +170,9 @@ document.getElementById('btn-new').addEventListener('click', () => openEditor())
 document.getElementById('btn-empty').addEventListener('click', () => openEditor());
 document.getElementById('search').addEventListener('input', refresh);
 
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && STORAGE_KEY in changes) {
-    _cache = changes[STORAGE_KEY].newValue ?? [];
-    refresh();
-  }
+PitonStorage.onMetadataChanged(metadata => {
+  _cache = metadata;
+  refresh();
 });
 
 refresh();

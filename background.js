@@ -1,25 +1,9 @@
 'use strict';
 
-const STORAGE_KEY = 'lm_scripts';
+importScripts('shared/storage.js');
 
-// In-memory cache: avoids async storage read on every tab event
-let _scriptCache = null;
 // Compiled regex cache: avoids re-compiling the same pattern strings
 const patternCache = new Map();
-
-async function getScripts() {
-  if (_scriptCache !== null) return _scriptCache;
-  const r = await chrome.storage.local.get(STORAGE_KEY);
-  _scriptCache = r[STORAGE_KEY] ?? [];
-  return _scriptCache;
-}
-
-// Keep cache in sync when storage changes (e.g. editor saves)
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && STORAGE_KEY in changes) {
-    _scriptCache = changes[STORAGE_KEY].newValue ?? [];
-  }
-});
 
 function matchPattern(pattern, url) {
   if (!pattern || !url) return false;
@@ -47,6 +31,38 @@ function scriptMatchesUrl(script, url) {
   return (script.matches ?? []).some(p => matchPattern(p, url));
 }
 
+function hostFromPattern(pattern) {
+  const noScheme = pattern.replace(/^[^:]+:\/\//, '');
+  return noScheme.split('/')[0] || pattern;
+}
+
+function scriptMatchesHost(script, url) {
+  if (!url) return false;
+  let host;
+  try { host = new URL(url).hostname; } catch { return false; }
+  return (script.matches ?? []).some(pattern => {
+    const patternHost = hostFromPattern(pattern);
+    if (patternHost === '*') return true;
+    const clean = patternHost.replace(/^\*\./, '');
+    return host === clean || host.endsWith(`.${clean}`);
+  });
+}
+
+function popupData(url, scripts) {
+  let host = '—';
+  if (url) {
+    try { host = new URL(url).hostname || url.slice(0, 40); }
+    catch { host = url.slice(0, 40); }
+  }
+  return {
+    url,
+    host,
+    total: scripts.length,
+    activeCount: scripts.filter(s => s.enabled && scriptMatchesUrl(s, url)).length,
+    scripts: url ? scripts.filter(s => scriptMatchesHost(s, url)) : [],
+  };
+}
+
 // Track injected scripts per tab to avoid duplicates within same page load
 const injected = new Set();
 
@@ -61,9 +77,10 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     }
   }
 
-  const scripts = await getScripts();
+  const scripts = await PitonStorage.listMetadata();
   updateBadge(tabId, url, scripts);
 
+  const pending = [];
   for (const script of scripts) {
     if (!script.enabled) continue;
     if (!scriptMatchesUrl(script, url)) continue;
@@ -77,32 +94,35 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
     if (!shouldInject || injected.has(key)) continue;
     injected.add(key);
-
-    const runCode = script.code.replace(
-      /\/\/ ==UserScript==([\s\S]*?)\/\/ ==\/UserScript==\n?/, ''
-    );
-    chrome.scripting.executeScript({
-      target: { tabId },
-      world: 'MAIN',
-      func: (code) => {
-        const s = document.createElement('script');
-        s.textContent = code;
-        (document.head || document.documentElement).appendChild(s);
-        s.remove();
-      },
-      args: [runCode],
-      injectImmediately: runAt === 'document_start',
-    }).catch(e => {
-      console.error(`[piton] inject "${script.name}":`, e.message);
-    });
+    pending.push(PitonStorage.getScript(script.id).then(fullScript => {
+      if (!fullScript) return;
+      const runCode = fullScript.code.replace(
+        /\/\/ ==UserScript==([\s\S]*?)\/\/ ==\/UserScript==\n?/, ''
+      );
+      return chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: (code) => {
+          const s = document.createElement('script');
+          s.textContent = code;
+          (document.head || document.documentElement).appendChild(s);
+          s.remove();
+        },
+        args: [runCode],
+        injectImmediately: runAt === 'document_start',
+      }).catch(e => {
+        console.error(`[piton] inject "${script.name}":`, e.message);
+      });
+    }));
   }
+  await Promise.all(pending);
 });
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   try {
     const tab = await chrome.tabs.get(tabId);
     if (!tab.url) return;
-    const scripts = await getScripts();
+    const scripts = await PitonStorage.listMetadata();
     updateBadge(tabId, tab.url, scripts);
   } catch {}
 });
@@ -119,22 +139,37 @@ function updateBadge(tabId, url, scripts) {
   }
 }
 
-// Keep service worker alive — MV3 terminates idle workers after ~30s
-chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
+// Warm the metadata cache at Chrome's minimum recurring alarm interval.
+chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(alarm => {
-  if (alarm.name === 'keepalive') getScripts();
+  if (alarm.name === 'keepalive') PitonStorage.listMetadata();
 });
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
+  chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });
 });
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === 'GET_POPUP_DATA') {
+    (async () => {
+      try {
+        const [[tab], scripts] = await Promise.all([
+          chrome.tabs.query({ active: true, currentWindow: true }),
+          PitonStorage.listMetadata(),
+        ]);
+        sendResponse(popupData(tab?.url || '', scripts));
+      } catch {
+        sendResponse(popupData('', []));
+      }
+    })();
+    return true;
+  }
+
   if (msg.type === 'GET_ACTIVE_SCRIPTS') {
     (async () => {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (!tab?.url) return sendResponse({ url: '', count: 0 });
-        const scripts = await getScripts();
+        const scripts = await PitonStorage.listMetadata();
         const count = scripts.filter(s => s.enabled && scriptMatchesUrl(s, tab.url)).length;
         sendResponse({ url: tab.url, count });
       } catch {
@@ -147,9 +182,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'INJECT_NOW') {
     (async () => {
       try {
-        _scriptCache = null; // scripts just changed — force fresh read
-        const scripts = await getScripts();
-        const script  = scripts.find(s => s.id === msg.scriptId);
+        const script = await PitonStorage.getScript(msg.scriptId);
         if (!script || !script.enabled) { sendResponse({}); return; }
 
         const runCode = script.code.replace(
