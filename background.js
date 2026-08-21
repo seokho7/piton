@@ -4,6 +4,15 @@ importScripts('shared/storage.js');
 
 // Compiled regex cache: avoids re-compiling the same pattern strings
 const patternCache = new Map();
+const POPUP_SNAPSHOTS_KEY = 'piton_popup_snapshots_v1';
+let popupSnapshots = Object.create(null);
+
+const popupSnapshotsReady = chrome.storage.session.get(POPUP_SNAPSHOTS_KEY)
+  .then(stored => {
+    const snapshots = stored[POPUP_SNAPSHOTS_KEY];
+    if (snapshots && typeof snapshots === 'object') popupSnapshots = snapshots;
+  })
+  .catch(() => {});
 
 function matchPattern(pattern, url) {
   if (!pattern || !url) return false;
@@ -63,12 +72,31 @@ function popupData(url, scripts) {
   };
 }
 
+async function cachePopupData(tab, scripts) {
+  if (!Number.isInteger(tab?.id) || !Number.isInteger(tab?.windowId)) return;
+  await popupSnapshotsReady;
+  popupSnapshots[tab.windowId] = {
+    ...popupData(tab.url || tab.pendingUrl || '', scripts),
+    tabId: tab.id,
+  };
+  await chrome.storage.session.set({ [POPUP_SNAPSHOTS_KEY]: popupSnapshots });
+}
+
+async function refreshTabPresentation(scripts, activeOnly = false) {
+  const tabs = await chrome.tabs.query(activeOnly ? { active: true } : {});
+  await Promise.all(tabs.map(tab => {
+    const url = tab.url || tab.pendingUrl || '';
+    if (!activeOnly) updateBadge(tab.id, url, scripts);
+    return tab.active ? cachePopupData(tab, scripts) : undefined;
+  }));
+}
+
 // Track injected scripts per tab to avoid duplicates within same page load
 const injected = new Set();
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   const url = tab.url || tab.pendingUrl;
-  if (!url || /^(chrome|chrome-extension|about|data|blob|javascript):/.test(url)) return;
+  if (!url || (!changeInfo.status && !changeInfo.url)) return;
 
   // Clear injection cache on new navigation
   if (changeInfo.status === 'loading') {
@@ -79,6 +107,9 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
   const scripts = await PitonStorage.listMetadata();
   updateBadge(tabId, url, scripts);
+  if (tab.active) cachePopupData(tab, scripts).catch(() => {});
+
+  if (/^(chrome|chrome-extension|about|data|blob|javascript):/.test(url)) return;
 
   const pending = [];
   for (const script of scripts) {
@@ -121,10 +152,19 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   try {
     const tab = await chrome.tabs.get(tabId);
-    if (!tab.url) return;
     const scripts = await PitonStorage.listMetadata();
-    updateBadge(tabId, tab.url, scripts);
+    const url = tab.url || tab.pendingUrl || '';
+    updateBadge(tabId, url, scripts);
+    await cachePopupData(tab, scripts);
   } catch {}
+});
+
+chrome.windows.onRemoved.addListener(windowId => {
+  popupSnapshotsReady.then(() => {
+    if (!(windowId in popupSnapshots)) return;
+    delete popupSnapshots[windowId];
+    return chrome.storage.session.set({ [POPUP_SNAPSHOTS_KEY]: popupSnapshots });
+  }).catch(() => {});
 });
 
 function updateBadge(tabId, url, scripts) {
@@ -147,6 +187,23 @@ chrome.alarms.onAlarm.addListener(alarm => {
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });
 });
+
+// Visible pages send a cheap heartbeat. This keeps metadata and the MV3 worker
+// warm while Chrome is actively being used; hidden tabs do no recurring work.
+chrome.runtime.onConnect.addListener(port => {
+  if (port.name !== 'piton-keepalive') return;
+  port.onMessage.addListener(() => {
+    PitonStorage.listMetadata().catch(() => {});
+  });
+});
+
+PitonStorage.onMetadataChanged(scripts => {
+  refreshTabPresentation(scripts).catch(() => {});
+});
+
+PitonStorage.listMetadata()
+  .then(scripts => refreshTabPresentation(scripts, true))
+  .catch(() => {});
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'GET_POPUP_DATA') {

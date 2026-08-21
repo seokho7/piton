@@ -2,6 +2,161 @@
 
 performance.mark('piton-popup-start');
 
+// Popup-local storage client. Kept in this file so opening the popup loads only
+// one external resource and never waits for the background service worker.
+const PopupStorage = (() => {
+  const LEGACY_KEY = 'lm_scripts';
+  const INDEX_KEY = 'piton_script_index_v1';
+  const SESSION_INDEX_KEY = 'piton_script_index_cache_v1';
+  const POPUP_SNAPSHOTS_KEY = 'piton_popup_snapshots_v1';
+  const CODE_PREFIX = 'piton_script_code_v1:';
+
+  let metadataCache = null;
+  let loadPromise = null;
+  const listeners = new Set();
+  const codeKey = id => `${CODE_PREFIX}${id}`;
+
+  function withoutCode(script) {
+    const { code: _code, ...metadata } = script;
+    return metadata;
+  }
+
+  function cacheMetadata(metadata) {
+    metadataCache = metadata;
+    Promise.resolve(chrome.storage.session?.set({ [SESSION_INDEX_KEY]: metadata }))
+      .catch(() => {});
+    return metadata;
+  }
+
+  async function migrateLegacy() {
+    const stored = await chrome.storage.local.get([INDEX_KEY, LEGACY_KEY]);
+    if (Array.isArray(stored[INDEX_KEY])) return cacheMetadata(stored[INDEX_KEY]);
+
+    const legacy = Array.isArray(stored[LEGACY_KEY]) ? stored[LEGACY_KEY] : [];
+    const metadata = legacy.map(withoutCode);
+    const sources = {};
+    for (const script of legacy) {
+      if (script?.id) sources[codeKey(script.id)] = script.code ?? '';
+    }
+
+    if (Object.keys(sources).length) await chrome.storage.local.set(sources);
+    await chrome.storage.local.set({ [INDEX_KEY]: metadata });
+    cacheMetadata(metadata);
+    if (LEGACY_KEY in stored) await chrome.storage.local.remove(LEGACY_KEY);
+    return metadata;
+  }
+
+  async function listMetadata() {
+    if (metadataCache !== null) return metadataCache;
+    if (loadPromise) return loadPromise;
+
+    loadPromise = (async () => {
+      try {
+        const session = await chrome.storage.session.get(SESSION_INDEX_KEY);
+        if (Array.isArray(session[SESSION_INDEX_KEY])) {
+          metadataCache = session[SESSION_INDEX_KEY];
+          return metadataCache;
+        }
+      } catch {}
+      return migrateLegacy();
+    })();
+
+    try { return await loadPromise; }
+    finally { loadPromise = null; }
+  }
+
+  async function freshMetadata() {
+    await listMetadata();
+    const stored = await chrome.storage.local.get(INDEX_KEY);
+    return Array.isArray(stored[INDEX_KEY]) ? stored[INDEX_KEY] : [];
+  }
+
+  async function writeMetadata(metadata) {
+    await chrome.storage.local.set({ [INDEX_KEY]: metadata });
+    cacheMetadata(metadata);
+    return metadata;
+  }
+
+  async function listScripts() {
+    const metadata = await listMetadata();
+    if (!metadata.length) return [];
+    const sources = await chrome.storage.local.get(
+      metadata.map(script => codeKey(script.id))
+    );
+    return metadata.map(script => ({
+      ...script,
+      code: sources[codeKey(script.id)] ?? '',
+    }));
+  }
+
+  async function putMany(scripts) {
+    if (!scripts.length) return listMetadata();
+    const metadata = await freshMetadata();
+    const byId = new Map(metadata.map(script => [script.id, script]));
+    const sources = {};
+
+    for (const script of scripts) {
+      if (!script?.id) throw new Error('Script id is required');
+      byId.set(script.id, { ...(byId.get(script.id) || {}), ...withoutCode(script) });
+      if ('code' in script) sources[codeKey(script.id)] = script.code ?? '';
+    }
+
+    if (Object.keys(sources).length) await chrome.storage.local.set(sources);
+    return writeMetadata([...byId.values()]);
+  }
+
+  async function setEnabled(id, enabled) {
+    const metadata = await freshMetadata();
+    let changed = false;
+    const next = metadata.map(script => {
+      if (script.id !== id) return script;
+      changed = true;
+      return { ...script, enabled };
+    });
+    if (changed) await writeMetadata(next);
+    return changed;
+  }
+
+  async function remove(id) {
+    const metadata = await freshMetadata();
+    const next = metadata.filter(script => script.id !== id);
+    if (next.length === metadata.length) return false;
+    await writeMetadata(next);
+    await chrome.storage.local.remove(codeKey(id));
+    return true;
+  }
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !(INDEX_KEY in changes)) return;
+    const metadata = Array.isArray(changes[INDEX_KEY].newValue)
+      ? changes[INDEX_KEY].newValue
+      : [];
+    cacheMetadata(metadata);
+    for (const listener of listeners) listener(metadata);
+  });
+
+  return Object.freeze({
+    listMetadata,
+    listScripts,
+    async getPopupSnapshots() {
+      try {
+        const stored = await chrome.storage.session.get(POPUP_SNAPSHOTS_KEY);
+        const snapshots = stored[POPUP_SNAPSHOTS_KEY];
+        return snapshots && typeof snapshots === 'object' ? snapshots : {};
+      } catch {
+        return {};
+      }
+    },
+    putMany,
+    setEnabled,
+    remove,
+    onMetadataChanged(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  });
+})();
+
 const $ = id => document.getElementById(id);
 const patternCache = new Map();
 
@@ -77,18 +232,23 @@ function makePopupData(url, scripts) {
 }
 
 async function requestPopupData() {
-  try {
-    const response = await chrome.runtime.sendMessage({ type: 'GET_POPUP_DATA' });
-    if (response && Array.isArray(response.scripts)) return response;
-  } catch {
-    // Service worker unavailable: direct metadata-only fallback.
+  const [[tab], snapshots] = await Promise.all([
+    chrome.tabs.query({ active: true, currentWindow: true }),
+    PopupStorage.getPopupSnapshots(),
+  ]);
+  const url = tab?.url || tab?.pendingUrl || '';
+  const snapshot = snapshots[tab?.windowId];
+
+  if (
+    snapshot &&
+    snapshot.tabId === tab?.id &&
+    snapshot.url === url &&
+    Array.isArray(snapshot.scripts)
+  ) {
+    return snapshot;
   }
 
-  const [[tab], scripts] = await Promise.all([
-    chrome.tabs.query({ active: true, currentWindow: true }),
-    PitonStorage.listMetadata(),
-  ]);
-  return makePopupData(tab?.url || '', scripts);
+  return makePopupData(url, await PopupStorage.listMetadata());
 }
 
 function toast(message, ms = 2200) {
@@ -176,7 +336,7 @@ function applyMetadata(metadata) {
 }
 
 async function doExport() {
-  const scripts = await PitonStorage.listScripts();
+  const scripts = await PopupStorage.listScripts();
   if (!scripts.length) { toast('Nothing to export'); return; }
   const blob = new Blob([JSON.stringify(scripts, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -193,7 +353,7 @@ async function doImport(file) {
     const imported = JSON.parse(await file.text());
     if (!Array.isArray(imported)) throw new Error('Expected JSON array');
 
-    const existing = await PitonStorage.listMetadata();
+    const existing = await PopupStorage.listMetadata();
     const existingIds = new Set(existing.map(script => script.id));
     const additions = [];
 
@@ -205,7 +365,7 @@ async function doImport(file) {
       additions.push({ ...script, id, importedAt: Date.now() });
     }
 
-    await PitonStorage.putMany(additions);
+    await PopupStorage.putMany(additions);
     toast(`Imported ${additions.length} script${additions.length !== 1 ? 's' : ''}`);
   } catch (error) {
     toast(`Import failed: ${error.message}`);
@@ -240,7 +400,7 @@ $('script-list').addEventListener('change', async event => {
   $('page-pill').classList.toggle('lit', state.activeCount > 0);
 
   try {
-    await PitonStorage.setEnabled(script.id, enabled);
+    await PopupStorage.setEnabled(script.id, enabled);
   } catch (error) {
     event.target.checked = !enabled;
     script.enabled = !enabled;
@@ -255,7 +415,7 @@ $('script-list').addEventListener('click', async event => {
   if (!button || !card) return;
   if (button.classList.contains('edit')) return openEditor(card.dataset.id);
   if (button.classList.contains('del')) {
-    await PitonStorage.remove(card.dataset.id);
+    await PopupStorage.remove(card.dataset.id);
     toast('Script deleted');
   }
 });
@@ -263,7 +423,7 @@ $('script-list').addEventListener('click', async event => {
 (async () => {
   state = await requestPopupData();
   currentUrl = state.url;
-  PitonStorage.onMetadataChanged(applyMetadata);
+  PopupStorage.onMetadataChanged(applyMetadata);
   render();
   performance.mark('piton-popup-ready');
   performance.measure('piton-popup-init', 'piton-popup-start', 'piton-popup-ready');
