@@ -5,11 +5,11 @@
 globalThis.PitonStorage = (() => {
   const LEGACY_KEY = 'lm_scripts';
   const INDEX_KEY = 'piton_script_index_v1';
-  const SESSION_INDEX_KEY = 'piton_script_index_cache_v1';
   const CODE_PREFIX = 'piton_script_code_v1:';
 
   let metadataCache = null;
   let loadPromise = null;
+  let metadataRevision = 0;
   const listeners = new Set();
   const codeCache = new Map();
 
@@ -20,18 +20,15 @@ globalThis.PitonStorage = (() => {
     return metadata;
   }
 
-  async function cacheMetadata(metadata) {
+  function cacheMetadata(metadata) {
     metadataCache = metadata;
-    try {
-      await chrome.storage.session.set({ [SESSION_INDEX_KEY]: metadata });
-    } catch {
-      // storage.session may be unavailable on older Chromium builds.
-    }
     return metadata;
   }
 
   async function migrateLegacy() {
+    const revision = metadataRevision;
     const stored = await chrome.storage.local.get([INDEX_KEY, LEGACY_KEY]);
+    if (revision !== metadataRevision) return metadataCache;
 
     if (Array.isArray(stored[INDEX_KEY])) {
       return cacheMetadata(stored[INDEX_KEY]);
@@ -53,7 +50,7 @@ globalThis.PitonStorage = (() => {
     // always retains either the old complete record or the new complete record.
     if (Object.keys(sources).length) await chrome.storage.local.set(sources);
     await chrome.storage.local.set({ [INDEX_KEY]: metadata });
-    await cacheMetadata(metadata);
+    cacheMetadata(metadata);
     if (LEGACY_KEY in stored) await chrome.storage.local.remove(LEGACY_KEY);
 
     return metadata;
@@ -64,15 +61,12 @@ globalThis.PitonStorage = (() => {
     if (loadPromise) return loadPromise;
 
     loadPromise = (async () => {
-      try {
-        const session = await chrome.storage.session.get(SESSION_INDEX_KEY);
-        if (Array.isArray(session[SESSION_INDEX_KEY])) {
-          metadataCache = session[SESSION_INDEX_KEY];
-          return metadataCache;
-        }
-      } catch {
-        // Fall through to persistent storage.
-      }
+      // Read only the small index. A session cache adds another IPC round trip
+      // and can be stale after a write in another extension page.
+      const revision = metadataRevision;
+      const stored = await chrome.storage.local.get(INDEX_KEY);
+      if (revision !== metadataRevision) return metadataCache;
+      if (Array.isArray(stored[INDEX_KEY])) return cacheMetadata(stored[INDEX_KEY]);
       return migrateLegacy();
     })();
 
@@ -85,7 +79,7 @@ globalThis.PitonStorage = (() => {
 
   async function writeMetadata(metadata) {
     await chrome.storage.local.set({ [INDEX_KEY]: metadata });
-    await cacheMetadata(metadata);
+    cacheMetadata(metadata);
     return metadata;
   }
 
@@ -193,12 +187,11 @@ globalThis.PitonStorage = (() => {
       else codeCache.set(id, change.newValue);
     }
     if (!(INDEX_KEY in changes)) return;
+    metadataRevision += 1;
     const metadata = Array.isArray(changes[INDEX_KEY].newValue)
       ? changes[INDEX_KEY].newValue
       : [];
-    metadataCache = metadata;
-    Promise.resolve(chrome.storage.session?.set({ [SESSION_INDEX_KEY]: metadata }))
-      .catch(() => {});
+    cacheMetadata(metadata);
     notify(metadata);
   });
 

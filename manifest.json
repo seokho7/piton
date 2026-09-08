@@ -3,7 +3,7 @@
   "name": "piton",
   "version": "1.0.0",
   "description": "Userscript manager — inject & manage scripts on any page",
-  "permissions": ["storage", "scripting", "tabs", "alarms"],
+  "permissions": ["storage", "scripting", "tabs"],
   "host_permissions": ["<all_urls>"],
   "icons": {
     "16":  "icons/icon-16.png",
@@ -14,13 +14,6 @@
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content/keepalive.js"],
-      "run_at": "document_start"
-    }
-  ],
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "piton",

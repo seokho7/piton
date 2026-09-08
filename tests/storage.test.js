@@ -17,10 +17,12 @@ function createStorage(initialLocal = {}, initialSession = {}) {
     session: { ...initialSession },
   };
   const listeners = [];
+  const reads = [];
 
   function area(name) {
     return {
       async get(keys) {
+        reads.push({ area: name, keys });
         if (keys == null) return { ...stores[name] };
         const selected = Array.isArray(keys) ? keys : [keys];
         return Object.fromEntries(
@@ -59,7 +61,7 @@ function createStorage(initialLocal = {}, initialSession = {}) {
     console,
   });
   vm.runInContext(source, context);
-  return { api: context.PitonStorage, stores };
+  return { api: context.PitonStorage, stores, chrome: context.chrome, reads };
 }
 
 test('migrates legacy scripts without losing source code', async () => {
@@ -105,4 +107,53 @@ test('updates metadata independently and removes source on delete', async () => 
   await api.remove('one');
   assert.equal(await api.getScript('one'), null);
   assert.equal(stores.local[api.codeKey('one')], undefined);
+});
+
+test('metadata loads without waiting for session storage or reading source code', async () => {
+  const metadata = [{ id: 'one', name: 'One', matches: [] }];
+  const { api, chrome, reads } = createStorage({ piton_script_index_v1: metadata });
+  chrome.storage.session.get = () => new Promise(() => {});
+  chrome.storage.session.set = () => new Promise(() => {});
+
+  let result;
+  api.listMetadata().then(value => { result = value; });
+  await new Promise(setImmediate);
+  assert.deepEqual(result, metadata);
+  assert.deepEqual(reads, [{ area: 'local', keys: 'piton_script_index_v1' }]);
+});
+
+test('persistent metadata wins over an obsolete session cache', async () => {
+  const { api } = createStorage(
+    { piton_script_index_v1: [] },
+    { piton_script_index_cache_v1: [{ id: 'deleted', name: 'Deleted' }] }
+  );
+  assert.equal((await api.listMetadata()).length, 0);
+});
+
+test('an in-flight read cannot overwrite a newer storage event', async () => {
+  const { api, chrome } = createStorage();
+  let resolveRead;
+  chrome.storage.local.get = () => new Promise(resolve => { resolveRead = resolve; });
+  const loading = api.listMetadata();
+  await new Promise(setImmediate);
+  const latest = [{ id: 'new', name: 'New' }];
+  await chrome.storage.local.set({ piton_script_index_v1: latest });
+  resolveRead({ piton_script_index_v1: [] });
+  assert.deepEqual(await loading, latest);
+  assert.deepEqual(await api.listMetadata(), latest);
+});
+
+test('legacy fallback does not replace an index created during its read', async () => {
+  const { api, chrome, stores } = createStorage();
+  let resolveLegacy;
+  chrome.storage.local.get = keys => keys === 'piton_script_index_v1'
+    ? Promise.resolve({})
+    : new Promise(resolve => { resolveLegacy = resolve; });
+  const loading = api.listMetadata();
+  await new Promise(setImmediate);
+  const latest = [{ id: 'new', name: 'New' }];
+  await chrome.storage.local.set({ piton_script_index_v1: latest });
+  resolveLegacy({});
+  assert.deepEqual(await loading, latest);
+  assert.deepEqual(stores.local.piton_script_index_v1, latest);
 });

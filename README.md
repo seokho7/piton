@@ -141,6 +141,34 @@ piton은 **어떠한 데이터도 외부로 전송하지 않습니다.**
 
 ---
 
+## 팝업 성능 확인
+
+팝업은 현재 탭과 스크립트 메타데이터를 동시에 조회합니다. 코드 본문은 편집·실행·내보내기 시 읽습니다. 세션 캐시나 백그라운드 워커의 준비 완료를 기다리지 않습니다.
+
+수정 사항 적용: `chrome://extensions/` → **piton 새로고침** → 팝업 다시 열기.
+
+특정 프로필에서 계속 느리면 팝업 안에서 우클릭 → **검사** → Console에서 실행합니다. DevTools를 연 상태의 측정값은 평소와 다를 수 있습니다.
+
+```javascript
+console.table(performance.getEntriesByType('measure').map(({ name, duration }) => ({
+  name,
+  ms: Math.round(duration * 10) / 10,
+})));
+```
+
+- `piton-popup-tab`: 현재 탭 조회 시간
+- `piton-popup-metadata`: 목록 메타데이터 조회 시간
+- `piton-popup-init`: 팝업 JavaScript 시작부터 목록 렌더링 완료까지
+- `piton-popup-navigation-to-ready`: 팝업 문서 로딩 시작부터 목록 렌더링 완료까지. 아이콘 클릭부터 문서 로딩 시작 전까지의 대기는 포함하지 않습니다.
+
+회귀 테스트:
+
+```sh
+node --test tests/*.test.js
+```
+
+---
+
 ## 제작
 
 **seokho7** — [github.com/seokho7](https://github.com/seokho7) · [seokhoweb.com](https://seokhoweb.com)
